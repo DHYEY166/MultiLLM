@@ -1256,8 +1256,11 @@ app.post('/api/knowledge/search', requireAuth, async (req, res) => {
     const results = [];
     const userUploadsDir = path.join(__dirname, 'uploads', `user_${userId}`);
     
+    console.log(`[KNOWLEDGE] Searching for: "${query}" in user ${userId} files`);
+    
     if (fs.existsSync(userUploadsDir)) {
       const files = fs.readdirSync(userUploadsDir);
+      console.log(`[KNOWLEDGE] Found ${files.length} files in ${userUploadsDir}`);
       
       for (const file of files) {
         const filePath = path.join(userUploadsDir, file);
@@ -1265,23 +1268,62 @@ app.post('/api/knowledge/search', requireAuth, async (req, res) => {
         
         try {
           const content = await extractTextContent(filePath, originalName);
+          console.log(`[KNOWLEDGE] Extracted ${content.length} chars from ${originalName}`);
           
-          // Simple text search (could be improved with better matching)
+          // Enhanced search logic
           const queryLower = query.toLowerCase();
           const contentLower = content.toLowerCase();
           
-          if (contentLower.includes(queryLower)) {
-            // Find relevant chunks around the match
-            const index = contentLower.indexOf(queryLower);
-            const start = Math.max(0, index - 150);
-            const end = Math.min(content.length, index + 300);
-            const chunk = content.substring(start, end);
+          // Check if filename is mentioned in query (like "Dhyey_Desai_Resume.pdf")
+          const fileNameInQuery = originalName.toLowerCase().replace(/[._]/g, ' ');
+          const isFileSpecific = queryLower.includes(fileNameInQuery) || 
+                                 queryLower.includes(originalName.toLowerCase());
+          
+          // Search for keyword matches or if specific file is requested
+          const keywords = queryLower.split(/\s+/).filter(w => w.length > 2);
+          let hasKeywordMatch = false;
+          let bestMatch = '';
+          let bestScore = 0;
+          
+          if (isFileSpecific || keywords.some(kw => contentLower.includes(kw))) {
+            hasKeywordMatch = true;
+            
+            // Find best matching section
+            const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 10);
+            
+            for (const sentence of sentences) {
+              const sentenceLower = sentence.toLowerCase();
+              let score = 0;
+              for (const keyword of keywords) {
+                if (sentenceLower.includes(keyword)) score++;
+              }
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = sentence.trim();
+              }
+            }
+            
+            // If no good sentence match, use beginning of content
+            if (!bestMatch && content.length > 50) {
+              bestMatch = content.substring(0, 500);
+            }
+          }
+          
+          if (hasKeywordMatch || isFileSpecific) {
+            // For file-specific queries, return more content
+            let chunk = bestMatch;
+            if (isFileSpecific && content.length > 200) {
+              chunk = content.substring(0, Math.min(1000, content.length));
+            }
             
             results.push({
               filename: originalName,
-              chunk: chunk,
-              relevanceScore: 1 // Simple scoring, could be improved
+              chunk: chunk || content.substring(0, 300),
+              relevanceScore: isFileSpecific ? 2 : 1,
+              isFileSpecific: isFileSpecific
             });
+            
+            console.log(`[KNOWLEDGE] Match found in ${originalName} (specific: ${isFileSpecific})`);
             
             if (results.length >= maxResults) break;
           }
@@ -1289,8 +1331,14 @@ app.post('/api/knowledge/search', requireAuth, async (req, res) => {
           console.error(`Error searching file ${file}:`, error);
         }
       }
+    } else {
+      console.log(`[KNOWLEDGE] No uploads directory found for user ${userId}`);
     }
     
+    // Sort by relevance score
+    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    
+    console.log(`[KNOWLEDGE] Returning ${results.length} results for query: "${query}"`);
     res.json({ results, query, found: results.length });
   } catch (error) {
     console.error('[KNOWLEDGE] Search error:', error);
