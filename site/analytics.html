@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MultiLLM - Analytics</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2322d3ee'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='black'%3EM%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">MultiLLM</div>
+      <a href="./">Chat</a>
+      <a href="./analytics.html">Analytics</a>
+      <a href="./models.html">Models</a>
+      <a href="./plugins.html">Plugins</a>
+      <a href="./admin.html">Admin</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid" style="grid-template-columns: 1fr;">
+      <div class="panel">
+        <div class="row wrap">
+          <div class="badge">Local Stats</div>
+          <div class="badge">Session-only</div>
+          <button id="reset" class="danger right">Reset Stats</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="kpi">
+          <div class="panel">
+            <div class="muted small">Total Queries</div>
+            <div id="kpiTotal" style="font-size:24px; font-weight:700">0</div>
+          </div>
+          <div class="panel">
+            <div class="muted small">Success Rate</div>
+            <div id="kpiSuccess" style="font-size:24px; font-weight:700">0%</div>
+          </div>
+          <div class="panel">
+            <div class="muted small">Top Task</div>
+            <div id="kpiTask" style="font-size:24px; font-weight:700">-</div>
+          </div>
+          <div class="panel">
+            <div class="muted small">Fastest Model</div>
+            <div id="kpiModel" style="font-size:24px; font-weight:700">-</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3 style="margin:0 0 8px 0">Breakdown</h3>
+        <div class="grid" style="grid-template-columns: 1fr 1fr;">
+          <div>
+            <div class="muted small">By Task</div>
+            <div id="byTask" class="mono small"></div>
+            <canvas id="chartTask" height="120" style="margin-top:8px; background:#0b1220; border:1px solid #263042; border-radius:8px"></canvas>
+          </div>
+          <div>
+            <div class="muted small">By Model (avg latency)</div>
+            <div id="byModel" class="mono small"></div>
+            <canvas id="chartModel" height="120" style="margin-top:8px; background:#0b1220; border:1px solid #263042; border-radius:8px"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { setActiveNav, $ } from './js/ui.js';
+    import { getStats, resetStats } from './js/analytics.js';
+    import authManager from './js/auth.js';
+    import AuthGuard from './js/authGuard.js';
+
+    // Protect this page - redirect to login if not authenticated
+    await AuthGuard.protect(authManager);
+    
+    setActiveNav();
+
+    const kpiTotal = $('#kpiTotal');
+    const kpiSuccess = $('#kpiSuccess');
+    const kpiTask = $('#kpiTask');
+    const kpiModel = $('#kpiModel');
+    const byTask = $('#byTask');
+    const byModel = $('#byModel');
+
+    function drawBars(canvas, entries, valueGetter, color){
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.clientWidth; // ensure crisp
+      const h = canvas.height = canvas.height; // keep set height
+      ctx.clearRect(0,0,w,h);
+      if (!entries.length) return;
+      const padding = 24; const gap = 10;
+      const maxVal = Math.max(...entries.map(e=> valueGetter(e)));
+      const barW = Math.max(12, (w - padding*2 - gap*(entries.length-1)) / entries.length);
+      entries.forEach((e, idx)=>{
+        const val = valueGetter(e);
+        const x = padding + idx*(barW+gap);
+        const height = maxVal ? Math.round((val/maxVal) * (h - padding*2)) : 0;
+        const y = h - padding - height;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, barW, height);
+      });
+    }
+
+    function render(){
+      const stats = getStats();
+      const total = stats.totalQueries || 0;
+      const successRate = total ? Math.round((stats.successes || 0) / total * 100) : 0;
+      const taskEntries = Object.entries(stats.byTask || {});
+      const topTask = taskEntries.sort((a,b)=>b[1]-a[1])[0]?.[0] || '-';
+      const modelEntries = Object.entries(stats.byModel || {});
+      const fastestModel = modelEntries.sort((a,b)=> (a[1].avg ?? 1e9) - (b[1].avg ?? 1e9))[0]?.[0] || '-';
+
+      kpiTotal.textContent = total;
+      kpiSuccess.textContent = successRate + '%';
+      kpiTask.textContent = topTask;
+      kpiModel.textContent = fastestModel;
+
+      byTask.textContent = taskEntries.map(([k,v])=> `${k.padEnd(18,' ')} ${String(v).padStart(3,' ')}`).join('\n') || '-';
+      byModel.textContent = modelEntries.map(([k,v])=> `${k.padEnd(18,' ')} ${Math.round(v.avg).toString().padStart(4,' ')} ms`).join('\n') || '-';
+
+      // charts
+      drawBars($('#chartTask'), taskEntries, ([,v])=> v, '#22d3ee');
+      drawBars($('#chartModel'), modelEntries, ([,v])=> Math.max(1, 1/(v.avg||1)), '#a78bfa');
+    }
+
+    render();
+    $('#reset').addEventListener('click', ()=>{ resetStats(); render(); });
+  </script>
+</body>
+</html>
+
+

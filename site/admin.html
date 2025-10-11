@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MultiLLM - Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2322d3ee'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='black'%3EM%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">MultiLLM</div>
+      <a href="./">Chat</a>
+      <a href="./analytics.html">Analytics</a>
+      <a href="./models.html">Models</a>
+      <a href="./plugins.html">Plugins</a>
+      <a href="./admin.html">Admin</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid" style="grid-template-columns: 1fr;">
+      <div class="panel">
+        <div class="row wrap">
+          <div class="badge">Admin Tools</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="grid" style="grid-template-columns: 1fr 1fr;">
+          <div class="panel">
+            <div class="muted small">Session</div>
+            <div class="mono small" id="sessionId">-</div>
+            <div class="spacer"></div>
+            <button id="newSession">New Session</button>
+          </div>
+          <div class="panel">
+            <div class="muted small">Storage</div>
+            <div class="row">
+              <button id="clearHistory" class="danger">Clear Conversation</button>
+              <button id="clearAll" class="danger">Clear All Local Data</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="muted small">Preferences</div>
+            <label class="row" style="gap:8px">
+              <input type="checkbox" id="prefCodeFirst" />
+              <span>Code-first formatting for coding tasks</span>
+            </label>
+            <label class="row" style="gap:8px">
+              <input type="checkbox" id="prefWebAccess" />
+              <span>Allow Web Access (DuckDuckGo Instant Answer)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { setActiveNav, $ } from './js/ui.js';
+    import { getOrCreateSessionId, clearHistory } from './js/context.js';
+    import { getPrefs, setPrefs } from './js/prefs.js';
+    import authManager from './js/auth.js';
+    import AuthGuard from './js/authGuard.js';
+
+    // Protect this page - redirect to login if not authenticated
+    await AuthGuard.protect(authManager);
+    setActiveNav();
+    let sess = getOrCreateSessionId();
+    const sessionEl = $('#sessionId');
+    const render = ()=>{ sessionEl.textContent = sess; };
+    render();
+    $('#newSession').addEventListener('click', ()=>{
+      sess = `sess_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+      localStorage.setItem('sessionId', sess);
+      render();
+    });
+    $('#clearHistory').addEventListener('click', ()=>{ clearHistory(sess); alert('Conversation cleared for current session.'); });
+    $('#clearAll').addEventListener('click', ()=>{ localStorage.clear(); alert('All local data cleared.'); location.reload(); });
+
+    // Prefs
+    const pref = getPrefs();
+    const codeFirst = $('#prefCodeFirst');
+    const webAccess = $('#prefWebAccess');
+    codeFirst.checked = !!pref.codeFirstFormatting;
+    webAccess.checked = !!pref.allowWebAccess;
+    codeFirst.addEventListener('change', ()=> setPrefs({ codeFirstFormatting: codeFirst.checked }));
+    webAccess.addEventListener('change', ()=> setPrefs({ allowWebAccess: webAccess.checked }));
+  </script>
+</body>
+</html>
+
+

@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.development
+
+# User Data (exclude actual user data but keep structure)
+data/users.json
+data/user_*/
+uploads/
+uploads/user_*/
+
+# SSH Keys and Security
+*.key
+*.key.pub
+*.pem
+ssh-key-*
+oracle-cloud-key*
+
+# Deployment Scripts (keep local, don't push to GitHub)
+quick-deploy.sh
+start-multillm.sh
+stop-multillm.sh
+test-connection.sh
+DEPLOYMENT_SETUP.md
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+ip.txt
+*.swp
+*.swo
+cookies.txt
+cookies2.txt
+cookies*.txt
+
+# Screenshots and media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Build files
+dist/
+build/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Misc
+*.tsbuildinfo
+CHANGELOG.md

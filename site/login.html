@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MultiLLM - Login</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2322d3ee'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='black'%3EM%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    .auth-container {
+      max-width: 400px;
+      margin: 2rem auto;
+      padding: 2rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    
+    .form-group label {
+      font-weight: 500;
+      color: var(--text);
+    }
+    
+    .form-group input {
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 1rem;
+    }
+    
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-alpha);
+    }
+    
+    .auth-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+    
+    .google-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: white;
+      color: #333;
+      text-decoration: none;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+    
+    .google-btn:hover {
+      background: #f8f9fa;
+      border-color: #dadce0;
+    }
+    
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 1rem 0;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+    
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    
+    .divider span {
+      padding: 0 1rem;
+    }
+    
+    .auth-toggle {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: var(--muted);
+    }
+    
+    .auth-toggle a {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    
+    .auth-toggle a:hover {
+      text-decoration: underline;
+    }
+    
+    .error-message {
+      padding: 0.75rem;
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+      color: #721c24;
+      font-size: 0.875rem;
+      display: none;
+    }
+    
+    .loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--primary);
+      text-decoration: none;
+      margin-bottom: 1rem;
+      font-weight: 500;
+    }
+    
+    .back-link:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">MultiLLM</div>
+      <a href="./">Chat</a>
+      <a href="./analytics.html">Analytics</a>
+      <a href="./models.html">Models</a>
+      <a href="./plugins.html">Plugins</a>
+      <a href="./knowledge.html">Knowledge</a>
+      <a href="./admin.html">Admin</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="auth-container">
+      <a href="/" class="back-link">
+        &larr; Back to MultiLLM
+      </a>
+      
+      <h1 id="auth-title">Sign In</h1>
+      <p class="muted">Access your personal AI assistant</p>
+      
+      <div class="error-message" id="error-message"></div>
+      
+      <form class="auth-form" id="auth-form">
+        <div class="form-group" id="name-group" style="display: none;">
+          <label for="name">Full Name</label>
+          <input type="text" id="name" name="name" placeholder="Enter your full name">
+        </div>
+        
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required placeholder="Enter your email">
+        </div>
+        
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required placeholder="Enter your password">
+        </div>
+        
+        <div class="auth-buttons">
+          <button type="submit" class="primary" id="submit-btn">Sign In</button>
+          
+          <div class="divider">
+            <span>or</span>
+          </div>
+          
+          <a href="/auth/google" class="google-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24">
+              <path fill="#4285f4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34a853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#fbbc05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+              <path fill="#ea4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Continue with Google
+          </a>
+        </div>
+      </form>
+      
+      <div class="auth-toggle">
+        <span id="toggle-text">Don't have an account?</span>
+        <a href="#" id="toggle-link">Sign up</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Google Analytics -->
+  <script src="./js/googleAnalytics.js"></script>
+
+  <script type="module">
+    import authManager from './js/auth.js';
+    
+    const form = document.getElementById('auth-form');
+    const emailInput = document.getElementById('email');
+    const passwordInput = document.getElementById('password');
+    const nameInput = document.getElementById('name');
+    const nameGroup = document.getElementById('name-group');
+    const submitBtn = document.getElementById('submit-btn');
+    const errorMessage = document.getElementById('error-message');
+    const toggleLink = document.getElementById('toggle-link');
+    const toggleText = document.getElementById('toggle-text');
+    const authTitle = document.getElementById('auth-title');
+    
+    let isSignUp = false;
+    
+    // Function to handle redirect after successful authentication
+    function handleSuccessfulAuth() {
+      const redirectUrl = sessionStorage.getItem('redirectAfterLogin') || '/';
+      sessionStorage.removeItem('redirectAfterLogin');
+      
+      // Add a small delay to ensure session is fully established
+      setTimeout(() => {
+        console.log('Redirecting to:', redirectUrl);
+        window.location.href = redirectUrl;
+      }, 100);
+    }
+    
+    // Check if user is already authenticated
+    authManager.onAuthChange((isAuthenticated) => {
+      if (isAuthenticated) {
+        handleSuccessfulAuth();
+      }
+    });
+    
+    // Toggle between sign in and sign up
+    toggleLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      isSignUp = !isSignUp;
+      
+      if (isSignUp) {
+        authTitle.textContent = 'Sign Up';
+        submitBtn.textContent = 'Sign Up';
+        toggleText.textContent = 'Already have an account?';
+        toggleLink.textContent = 'Sign in';
+        nameGroup.style.display = 'block';
+        nameInput.required = true;
+      } else {
+        authTitle.textContent = 'Sign In';
+        submitBtn.textContent = 'Sign In';
+        toggleText.textContent = "Don't have an account?";
+        toggleLink.textContent = 'Sign up';
+        nameGroup.style.display = 'none';
+        nameInput.required = false;
+      }
+      
+      hideError();
+    });
+    
+    // Check if email exists and what provider it uses
+    async function checkEmailProvider(email) {
+      try {
+        const response = await fetch('/auth/check-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        
+        if (response.ok) {
+          return await response.json();
+        }
+      } catch (error) {
+        console.error('Email check failed:', error);
+      }
+      return null;
+    }
+    
+    // Form submission
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideError();
+      
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+      const name = nameInput.value.trim();
+      
+      if (!email || !password) {
+        showError('Please fill in all required fields');
+        return;
+      }
+      
+      if (password.length < 6) {
+        showError('Password must be at least 6 characters long');
+        return;
+      }
+      
+      // For login, check if email exists and what provider it uses
+      if (!isSignUp) {
+        const emailInfo = await checkEmailProvider(email);
+        if (emailInfo && emailInfo.exists && emailInfo.provider === 'google') {
+          showError('This account was created with Google. Please use the "Continue with Google" button below.');
+          return;
+        }
+      }
+      
+      setLoading(true);
+      
+      try {
+        let result;
+        if (isSignUp) {
+          result = await authManager.register(email, password, name);
+        } else {
+          result = await authManager.login(email, password);
+        }
+        
+        if (result.success) {
+          handleSuccessfulAuth();
+        } else {
+          if (result.error.includes('Google sign-in')) {
+            showError('This account was created with Google. Please use the "Continue with Google" button below.');
+          } else {
+            showError(result.error);
+          }
+        }
+      } catch (error) {
+        showError('An unexpected error occurred. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    });
+    
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorMessage.style.display = 'block';
+    }
+    
+    function hideError() {
+      errorMessage.style.display = 'none';
+    }
+    
+    function setLoading(loading) {
+      if (loading) {
+        form.classList.add('loading');
+        submitBtn.textContent = isSignUp ? 'Signing up...' : 'Signing in...';
+      } else {
+        form.classList.remove('loading');
+        submitBtn.textContent = isSignUp ? 'Sign Up' : 'Sign In';
+      }
+    }
+    
+    // Handle URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('error')) {
+      showError('Authentication failed. Please try again.');
+    }
+  </script>
+</body>
+</html>

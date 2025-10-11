@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MultiLLM - Knowledge</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2322d3ee'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='black'%3EM%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    .file-row{display:flex; gap:12px; align-items:center; padding:8px 0; border-bottom:1px solid #f3f4f6}
+  </style>
+  <!-- Local parsing libraries (vendored) -->
+  <script src="./vendor/pdf.min.js"></script>
+  <script>
+    // Some builds expose pdfjsLib under window['pdfjs-dist/build/pdf']
+    window.pdfjsLib = window.pdfjsLib || (window['pdfjs-dist/build/pdf'] ? window['pdfjs-dist/build/pdf'] : window.pdfjsLib);
+    if (window['pdfjsLib']) {
+      window['pdfjsLib'].GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.min.js';
+    }
+  </script>
+  <script src="./vendor/mammoth.browser.min.js"></script>
+  </head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">MultiLLM</div>
+      <a href="./">Chat</a>
+      <a href="./analytics.html">Analytics</a>
+      <a href="./models.html">Models</a>
+      <a href="./plugins.html">Plugins</a>
+      <a href="./knowledge.html">Knowledge</a>
+      <a href="./admin.html">Admin</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid" style="grid-template-columns: 1fr;">
+      <div class="panel">
+        <div class="row wrap">
+          <div class="badge">Unified File Manager</div>
+          <div class="muted small">Upload datasets (CSV) for analysis or documents (TXT/MD/JSON/PDF/DOCX/code files) for knowledge</div>
+          <div class="right small muted">Server-stored</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="row wrap">
+          <input type="file" id="uploader" accept=".csv,.txt,.md,.json,.pdf,.docx,.doc,.js,.ts,.py,.java,.go,.rs,.c,.cpp,.cs,.rb,.php" />
+          <button id="importBtn" class="primary">Upload</button>
+          <button id="refreshBtn" class="secondary">Refresh</button>
+          <button id="clearAll" class="danger">Clear All</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3 style="margin:0 0 8px 0">Add Text Manually (Fallback)</h3>
+        <div class="row wrap">
+          <input id="manualName" placeholder="Filename (e.g., notes.txt)" style="max-width:320px" />
+          <button id="saveManual">Save</button>
+        </div>
+        <div class="spacer"></div>
+        <textarea id="manualText" placeholder="Paste text here…"></textarea>
+        <div class="small muted">Tip: If a PDF import fails, open it in Preview/Adobe Reader → Copy text → paste here → Save.</div>
+      </div>
+
+      <div class="panel">
+        <h3 style="margin:0 0 8px 0">Files</h3>
+        <div id="files"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Google Analytics -->
+  <script src="./js/googleAnalytics.js"></script>
+
+  <script type="module">
+    import { setActiveNav, $, $all } from './js/ui.js';
+    import { saveFile, importFileBlob, listFiles, deleteFile, getFileText, replaceFileText } from './js/files.js';
+    import authManager from './js/auth.js';
+    import AuthGuard from './js/authGuard.js';
+
+    // Protect this page - redirect to login if not authenticated
+    await AuthGuard.protect(authManager);
+    
+    setActiveNav();
+
+    const filesEl = $('#files');
+    const uploader = $('#uploader');
+    const importBtn = $('#importBtn');
+    const clearAllBtn = $('#clearAll');
+    const manualName = $('#manualName');
+    const manualText = $('#manualText');
+    const saveManual = $('#saveManual');
+
+    // Helpers to extract text locally
+    async function extractTextFromPDF(file){
+      if (!window['pdfjsLib']) {
+        throw new Error('PDF support unavailable (pdf.js not loaded). Check your internet connection or convert PDF to .txt/.md');
+      }
+      const arrayBuffer = await file.arrayBuffer();
+      // Defensive: if file is tiny or empty, bail early
+      if (!(arrayBuffer && arrayBuffer.byteLength > 0)){
+        throw new Error('Empty or unreadable PDF');
+      }
+      const loadingTask = window['pdfjsLib'].getDocument({ data: arrayBuffer, useWorkerFetch: false });
+      const pdf = await loadingTask.promise;
+      const parts = [];
+      const MAX_CHARS = 1_000_000; // ~1MB text cap
+      const MAX_PAGES = 100;       // sanity cap
+      let totalChars = 0;
+      const pageCount = Math.min(pdf.numPages, MAX_PAGES);
+      for (let p=1; p<=pageCount; p++){
+        let strings = '';
+        try {
+          const page = await pdf.getPage(p);
+          const content = await page.getTextContent();
+          const items = Array.isArray(content.items) ? content.items : [];
+          for (let i=0;i<items.length;i++){
+            const s = items[i]?.str || '';
+            strings += s + ' ';
+            totalChars += s.length + 1;
+            if (totalChars >= MAX_CHARS) break;
+          }
+        } catch(_e){ /* skip problematic page */ }
+        if (strings){ parts.push(strings.trim()); }
+        if (totalChars >= MAX_CHARS) break;
+      }
+      if (!parts.length){
+        return '[No selectable text detected in PDF. It may be scanned images. Convert to text or OCR first.]';
+      }
+      return parts.join('\n\n');
+    }
+
+    async function extractTextFromDocx(file){
+      if (!window['mammoth']) {
+        throw new Error('DOCX support unavailable (mammoth not loaded). Check your internet connection or convert DOCX to .txt/.md');
+      }
+      const arrayBuffer = await file.arrayBuffer();
+      const res = await window['mammoth'].convertToHtml({ arrayBuffer });
+      const html = res.value || '';
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      return (tmp.textContent || '').replace(/\s+/g,' ').trim();
+    }
+
+    // Extract code text from Jupyter notebooks (code cells only)
+    async function extractTextFromIpynb(file){
+      const raw = await file.text();
+      try{
+        const nb = JSON.parse(raw);
+        const cells = Array.isArray(nb.cells) ? nb.cells : [];
+        const code = cells
+          .filter(c => c.cell_type === 'code')
+          .map(c => Array.isArray(c.source) ? c.source.join('') : (c.source || ''))
+          .join('\n\n');
+        return code || '[No code cells found in this notebook]';
+      }catch(_e){
+        return raw; // fallback to raw content
+      }
+    }
+
+    function fileExt(name){
+      const m = /\.([A-Za-z0-9]+)$/.exec(name || '');
+      return m ? m[1].toLowerCase() : '';
+    }
+
+    async function render(){
+      try {
+        const response = await fetch('/api/files', {
+          credentials: 'include'
+        });
+        if (!response.ok) throw new Error('Failed to load files');
+        
+        const data = await response.json();
+        const allFiles = [...data.datasets, ...data.knowledge];
+        
+        filesEl.innerHTML = '';
+        if (!allFiles.length){ 
+          filesEl.innerHTML = '<div class="muted small">No files uploaded yet.</div>'; 
+          return; 
+        }
+        
+        for (const f of allFiles){
+          const row = document.createElement('div');
+          row.className = 'file-row';
+          const fileName = f.originalname || f.name;
+          const fileType = f.type === 'dataset' ? 'Dataset' : 'Knowledge';
+          const fileSize = (f.size / 1024).toFixed(1) + ' KB';
+          
+          row.innerHTML = `
+            <div class="mono small" style="flex:1">${fileName}</div>
+            <div class="small badge ${f.type === 'dataset' ? 'primary' : 'secondary'}">${fileType}</div>
+            <div class="small muted">${fileSize}</div>
+            <button data-filename="${f.filename || f.name}" data-type="${f.type}" class="danger small">Delete</button>
+          `;
+          
+          filesEl.appendChild(row);
+        }
+        
+        // Add delete event listeners
+        $all('button[data-filename]').forEach(btn=> btn.addEventListener('click', async ()=>{
+          const filename = btn.getAttribute('data-filename');
+          const type = btn.getAttribute('data-type');
+          
+          if (confirm(`Delete ${filename}?`)) {
+            try {
+              // We'll need to add a delete endpoint
+              const deleteResponse = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
+                method: 'DELETE'
+              });
+              
+              if (deleteResponse.ok) {
+                const result = await deleteResponse.json();
+                console.log('Delete successful:', result);
+                render(); // Refresh the list
+              } else {
+                const error = await deleteResponse.json().catch(() => ({ error: 'Unknown error' }));
+                console.error('Delete failed:', error);
+                alert(`Failed to delete file: ${error.error || 'Unknown error'}`);
+              }
+            } catch (error) {
+              alert('Error deleting file: ' + error.message);
+            }
+          }
+        }));
+        
+      } catch (error) {
+        console.error('Error loading files:', error);
+        filesEl.innerHTML = '<div class="muted small">Error loading files.</div>';
+      }
+    }
+
+    importBtn.addEventListener('click', async ()=>{
+      const file = uploader.files[0];
+      if (!file) {
+        alert('Please select a file to upload');
+        return;
+      }
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      importBtn.textContent = 'Uploading...';
+      importBtn.disabled = true;
+      
+      try {
+        const response = await fetch('/api/files/upload', {
+          method: 'POST',
+          body: formData
+        });
+        
+        console.log('Upload response status:', response.status);
+        console.log('Upload response headers:', response.headers);
+        
+        let result;
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          result = await response.json();
+        } else {
+          const text = await response.text();
+          console.log('Non-JSON response:', text.substring(0, 500));
+          throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 200)}...`);
+        }
+        
+        if (response.ok) {
+          importBtn.textContent = result.type === 'dataset' ? 'Dataset Added' : 'Document Added';
+          uploader.value = '';
+          
+          // Track file upload in Google Analytics
+          if (window.analytics) {
+            const fileExtension = result.originalname.split('.').pop().toLowerCase();
+            window.analytics.trackFileUpload(fileExtension, file.size);
+            window.analytics.trackConversion('knowledge_base_usage');
+          }
+          
+          alert(`Successfully uploaded "${result.originalname}" as ${result.type}`);
+          render(); // Refresh the file list
+        } else {
+          throw new Error(result.error || 'Upload failed');
+        }
+      } catch (error) {
+        console.error('Upload error:', error);
+        alert(`Upload failed: ${error.message}`);
+      } finally {
+        setTimeout(() => {
+          importBtn.textContent = 'Upload';
+          importBtn.disabled = false;
+        }, 2000);
+      }
+    });
+
+    // Add refresh button functionality
+    document.getElementById('refreshBtn').addEventListener('click', async () => {
+      const refreshBtn = document.getElementById('refreshBtn');
+      refreshBtn.textContent = 'Refreshing...';
+      refreshBtn.disabled = true;
+      
+      try {
+        await render();
+        refreshBtn.textContent = 'Refreshed';
+      } catch (error) {
+        refreshBtn.textContent = 'Error';
+      } finally {
+        setTimeout(() => {
+          refreshBtn.textContent = 'Refresh';
+          refreshBtn.disabled = false;
+        }, 1500);
+      }
+    });
+
+    // Update clear all to work with server files
+    clearAllBtn.addEventListener('click', async ()=>{
+      if (!confirm('Delete ALL uploaded files? This cannot be undone.')) return;
+      
+      try {
+        const response = await fetch('/api/files', {
+          credentials: 'include'
+        });
+        if (!response.ok) throw new Error('Failed to load files');
+        
+        const data = await response.json();
+        const allFiles = [...data.datasets, ...data.knowledge];
+        
+        let deleted = 0;
+        for (const file of allFiles) {
+          const filename = file.filename || file.name;
+          try {
+            const deleteResponse = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
+              method: 'DELETE'
+            });
+            if (deleteResponse.ok) deleted++;
+          } catch (e) {
+            console.error('Failed to delete:', filename, e);
+          }
+        }
+        
+        alert(`Deleted ${deleted} files`);
+        render();
+      } catch (error) {
+        alert('Error clearing files: ' + error.message);
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
+
+

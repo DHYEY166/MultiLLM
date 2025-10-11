@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MultiLLM - Chat</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%2322d3ee'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='black'%3EM%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">MultiLLM</div>
+      <a href="./">Chat</a>
+      <a href="./analytics.html">Analytics</a>
+      <a href="./models.html">Models</a>
+      <a href="./plugins.html">Plugins</a>
+      <a href="./knowledge.html">Knowledge</a>
+      <a href="./admin.html">Admin</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="grid" style="grid-template-columns: 1fr;">
+      <div class="panel chat">
+        <div class="row wrap">
+          <div class="badge">Local • Privacy-first</div>
+          <div class="badge" id="speedMode">Ultra-Fast Streaming</div>
+          <div class="badge hidden" id="datasetBadge" title="Dataset context injected">Dataset context applied</div>
+          <div class="badge">Intelligent Routing</div>
+          <div class="right small muted" id="ollamaStatus">Checking Ollama…</div>
+        </div>
+
+        <div class="chat-log" id="chatLog"></div>
+
+        <div class="footer panel">
+          <div class="controls">
+            <textarea id="query" placeholder="Ask anything… e.g., Write a Python function to reverse a string"></textarea>
+            <div class="grid" style="grid-template-columns: auto auto; gap:8px; align-content:flex-start">
+              <button id="send" class="primary">Send</button>
+              <button id="stop" disabled>Stop</button>
+              <button id="reset">Reset</button>
+              <div class="small" style="display:flex;flex-direction:column;gap:4px;min-width:180px">
+                <select id="datasetSelect" style="font-size:0.75rem;padding:4px;">
+                  <option value="">(no dataset pinned)</option>
+                </select>
+                <div style="display:flex;gap:4px;">
+                  <button id="pinDatasetBtn" class="small" type="button">Pin dataset</button>
+                  <button id="refreshDatasetBtn" class="small" type="button" title="Refresh dataset list">⟲</button>
+                </div>
+                <div class="small muted" style="font-size:0.7rem;">
+                  Upload files in <a href="./knowledge.html" style="color:#0066cc;">Knowledge</a> section
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chips" id="chips"></div>
+          <div class="row small muted" id="status"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Google Analytics -->
+  <script src="./js/googleAnalytics.js"></script>
+
+  <script type="module">
+    import { setActiveNav, $, formatMs } from './js/ui.js';
+    import { classifyTask } from './js/taskClassifier.js';
+    import { selectBestModel, recordLatency } from './js/modelRouter.js';
+    import { getOrCreateSessionId, getHistory, addMessage, clearHistory } from './js/context.js';
+    import { streamChatResponse, getChatResponse, pingOllama } from './js/llm.js';
+    import { runPrePlugins } from './js/plugins.js';
+    import { recordQueryStats } from './js/analytics.js';
+  import { getPrefs, setPrefs } from './js/prefs.js';
+    import { renderMarkdownLite } from './js/markdown.js';
+    import authManager from './js/auth.js';
+    import AuthGuard from './js/authGuard.js';
+
+    // Enable authentication - require login for user-specific data isolation
+    const urlParams = new URLSearchParams(window.location.search);
+    const SAFE_MODE = urlParams.has('safe');
+    
+    // Protect this page - redirect to login if not authenticated
+    await AuthGuard.protect(authManager);
+    let authenticated = authManager.isAuthenticated();
+    
+    console.log('[AUTH] Authentication enabled - user-specific data isolation active');
+
+    setActiveNav();
+
+    const sessionId = getOrCreateSessionId();
+    const chatLog = $('#chatLog');
+    const statusEl = $('#status');
+    const queryInput = $('#query');
+  const sendBtn = $('#send');
+    const stopBtn = $('#stop');
+    const resetBtn = $('#reset');
+    const ollamaStatus = $('#ollamaStatus');
+  const chipsEl = $('#chips');
+  const datasetBadge = $('#datasetBadge');
+    let abortController = null;
+
+    async function updateOllamaStatus(){
+      const ok = await pingOllama();
+      ollamaStatus.textContent = ok ? 'Ollama: Online' : 'Ollama: Offline (run `ollama serve`)';
+      ollamaStatus.style.color = ok ? 'var(--ok)' : 'var(--danger)';
+    }
+    updateOllamaStatus();
+
+    function renderHistory(){
+      chatLog.innerHTML = '';
+      const history = getHistory(sessionId);
+      for(const msg of history){
+        appendMessage(msg.role, msg.content);
+      }
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    // Clean up fake copy buttons and fix code formatting
+    function cleanFakeCopyButtons(content) {
+      // Remove standalone "Copy" text that appears after code blocks
+      content = content.replace(/\n\s*Copy\s*\n?/g, '\n');
+      content = content.replace(/Copy\s*Copy\s*/g, '');
+      content = content.replace(/```[a-z]*\n([\s\S]*?)\n```\s*Copy/gi, '```$1\n```');
+      
+      // Fix improperly formatted code blocks (single backticks for multi-line code)
+      // Handle patterns like "`python\nimport pandas..." or "python\nimport pandas..."
+      content = content.replace(/`?(python|javascript|java|cpp|c\+\+|html|css|sql|bash|json|xml|r)\n((?:(?:import|def|class|function|var|let|const|#|\/\/|\/\*).+\n?)+)/gim, 
+        (match, lang, code) => {
+          return `\`\`\`${lang.toLowerCase()}\n${code.trim()}\n\`\`\``;
+        });
+      
+      // Also handle cases where there's a single backtick at the start of multi-line code
+      content = content.replace(/`([a-z]+)\n((?:[^\n]+\n){3,})/gi, (match, lang, code) => {
+        // Only convert if it looks like code (has keywords)
+        if (/\b(import|def|class|function|var|let|const|#|\/\/|return|print|console|plt\.)/i.test(code)) {
+          return `\`\`\`${lang}\n${code.trim()}\n\`\`\``;
+        }
+        return match;
+      });
+      
+      // Remove any remaining isolated "Copy" text
+      content = content.replace(/\bCopy\b(?!\w)/g, '');
+      
+      return content.trim();
+    }
+
+    function wrapCodeBlocks(html){
+      // Add copy buttons to code blocks created by renderMarkdownLite
+      const container = document.createElement('div');
+      container.innerHTML = html;
+      
+      // Find code blocks that don't already have copy buttons
+      container.querySelectorAll('.codeblock').forEach(codeblock => {
+        if (!codeblock.querySelector('.copy-btn')) {
+          const btn = document.createElement('button');
+          btn.className = 'copy-btn small';
+          btn.textContent = 'Copy';
+          btn.setAttribute('data-copy-target', 'code');
+          codeblock.appendChild(btn);
+        }
+      });
+      
+      // Also handle standalone pre elements (fallback for non-markdown code)
+      container.querySelectorAll('pre').forEach(pre => {
+        if (!pre.closest('.codeblock')) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'codeblock';
+          const btn = document.createElement('button');
+          btn.className = 'copy-btn small';
+          btn.textContent = 'Copy';
+          btn.setAttribute('data-copy-target', 'pre');
+          
+          pre.parentNode.insertBefore(wrapper, pre);
+          wrapper.appendChild(pre);
+          wrapper.appendChild(btn);
+        }
+      });
+      
+      return container.innerHTML;
+    }
+
+    // Global event handler for copy buttons (using event delegation)
+    document.addEventListener('click', function(e) {
+      if (e.target && e.target.classList.contains('copy-btn')) {
+        const btn = e.target;
+        const codeblock = btn.closest('.codeblock');
+        let textToCopy = '';
+        
+        if (btn.getAttribute('data-copy-target') === 'code') {
+          const codeElement = codeblock?.querySelector('code');
+          textToCopy = codeElement ? (codeElement.textContent || codeElement.innerText) : '';
+        } else {
+          const preElement = codeblock?.querySelector('pre');
+          textToCopy = preElement ? (preElement.textContent || preElement.innerText) : '';
+        }
+        
+        if (textToCopy) {
+          navigator.clipboard.writeText(textToCopy).then(() => {
+            btn.textContent = 'Copied';
+            setTimeout(() => btn.textContent = 'Copy', 1200);
+          }).catch(() => {
+            btn.textContent = 'Error';
+            setTimeout(() => btn.textContent = 'Copy', 1200);
+          });
+        }
+      }
+    });
+
+    function appendMessage(role, content){
+      const row = document.createElement('div');
+      row.className = 'msg ' + (role === 'user' ? 'user' : 'assistant');
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      avatar.textContent = role === 'user' ? 'U' : 'A';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.innerHTML = wrapCodeBlocks(renderMarkdownLite(content));
+      if (role === 'user'){
+        row.appendChild(bubble);
+        row.appendChild(avatar);
+      } else {
+        row.appendChild(avatar);
+        row.appendChild(bubble);
+      }
+      chatLog.appendChild(row);
+    }
+
+    renderHistory();
+
+    async function handleSend(){
+      const query = queryInput.value.trim();
+      if (!query) return;
+      queryInput.value = '';
+
+      // Add user message
+      addMessage(sessionId, 'user', query);
+      appendMessage('user', query);
+      chatLog.scrollTop = chatLog.scrollHeight;
+
+      // Plugins (pre)
+      const pluginRes = await runPrePlugins({ query });
+      if (pluginRes.handled){
+        addMessage(sessionId, 'assistant', pluginRes.response);
+        appendMessage('assistant', pluginRes.response);
+        return;
+      }
+
+      if (!authenticated) {
+        // Local echo fallback in unauthenticated mode - but allow API calls to still work
+        console.warn('[AUTH] Not authenticated but allowing API calls to proceed');
+        // Don't return here - let the API calls proceed anyway
+      }
+
+      // Classify and route
+      let task, confidence, complexity, primary, alternatives;
+      try {
+        const classification = classifyTask(query);
+        task = classification.task;
+        confidence = classification.confidence;
+        complexity = classification.complexity;
+        const modelSelection = selectBestModel(task);
+        primary = modelSelection.primary;
+        alternatives = modelSelection.alternatives;
+        statusEl.textContent = `Task: ${task} (${Math.round(confidence*100)}% • ${complexity}) → Model: ${primary}`;
+      } catch (e) {
+        console.warn('Task classification failed, using defaults:', e);
+        task = 'general';
+        confidence = 0.8;
+        complexity = 'simple';
+        primary = 'llama3.2:3b';
+        alternatives = ['llama3.1:8b', 'mistral:7b'];
+        statusEl.textContent = `Task: ${task} (fallback) → Model: ${primary}`;
+      }
+
+  // Get pinned dataset early for both auto-append and query detection
+  const pinnedDataset = getPrefs().pinnedDataset;
+  
+  // Only detect ACTUAL dataset queries (not general programming questions)
+  const hasDatasetQuery = pinnedDataset && /(?:dataset|\.csv|data\.csv|analyze.*dataset|dataset.*analysis|show.*from.*dataset|query.*dataset)/i.test(query);
+  
+  // ALWAYS use streaming mode for better user experience
+  const wantsFull = false; // Force streaming for all queries
+      // Always use streaming for real-time token display
+      const start = performance.now();
+      let streamed = '';
+      
+      // Create streaming message bubble
+      const aiRow = document.createElement('div');
+      aiRow.className = 'msg assistant';
+      aiRow.innerHTML = '<div class="avatar">A</div><div class="bubble" id="streamBubble"><span class="typing"></span></div>';
+      chatLog.appendChild(aiRow);
+      const bubble = aiRow.querySelector('#streamBubble');
+
+      // Limit conversation history to last 4 messages (2 exchanges) to prevent timeouts
+      let fullHistory = getHistory(sessionId).map(m=>({ role: m.role, content: m.content }));
+      let messages = fullHistory.slice(-4); // Keep only recent context
+      
+      // Auto-append pinned dataset ONLY to clearly data-related queries
+      // (pinnedDataset already declared above)
+      
+      // Only work with pinned dataset if user is asking about the SPECIFIC pinned dataset
+      const isAskingAboutPinnedDataset = pinnedDataset && (
+        query.toLowerCase().includes(pinnedDataset.toLowerCase()) ||
+        /(?:this dataset|the dataset|current dataset|my dataset|uploaded dataset)/i.test(query)
+      );
+      
+      if (isAskingAboutPinnedDataset && messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage.role === 'user' && lastMessage.content === query) {
+          // Check if dataset reference isn't already in the query
+          if (!/\(dataset:|\.csv\)/i.test(query)) {
+            const enhancedQuery = `${query} (dataset: ${pinnedDataset})`;
+            lastMessage.content = enhancedQuery;
+            console.log(`[AUTO-PIN] Enhanced query with pinned dataset: "${query}" → "${enhancedQuery}"`);
+          }
+        }
+      }
+
+      // Inject system instruction for code-first formatting when applicable
+      let prefs;
+      try {
+        prefs = getPrefs();
+      } catch (e) {
+        console.warn('getPrefs failed, using defaults:', e);
+        prefs = { codeFirstFormatting: true };
+      }
+      const queryLower = query.toLowerCase();
+      const looksLikeCodeAsk = /(give|write|show).*code|snippet|implementation/.test(queryLower);
+      if (prefs.codeFirstFormatting && (task === 'code_generation' || looksLikeCodeAsk)){
+        messages.unshift({ role: 'system', content: [
+          'For coding requests: 1) Output a single properly fenced code block FIRST with a language tag (e.g., ```python). ',
+          '2) Preserve correct indentation for the language (Python: 4 spaces per level). ',
+          '3) Do NOT include headings or docstrings inside the code unless explicitly asked. ',
+          '4) After the code block, provide a very short explanation paragraph.'
+        ].join('') });
+      }
+
+      // Server-side knowledge retrieval (replaced local knowledge)
+      try {
+        const knowledgeResponse = await fetch('/api/knowledge/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ query: query, maxResults: 2 })
+        });
+        
+        if (knowledgeResponse.ok) {
+          const knowledgeData = await knowledgeResponse.json();
+          if (knowledgeData.results && knowledgeData.results.length > 0) {
+            const contextText = knowledgeData.results
+              .map((r, i) => `Source ${i+1} (${r.filename}):\n${r.chunk}`)
+              .join('\n\n');
+            
+            console.log('[KB] Server knowledge found:', knowledgeData.results.length, 'chunks');
+            messages.unshift({ 
+              role: 'system', 
+              content: 'Use the following knowledge from uploaded documents if relevant. If irrelevant, ignore it.\n\n' + contextText 
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('[KB] Knowledge search failed:', error);
+      }
+
+      // Plugin-provided system instructions
+      if (pluginRes.systemInstructions?.length){
+        messages.unshift({ role: 'system', content: pluginRes.systemInstructions.join(' ') });
+      }
+
+      // Enable streaming controls
+  abortController = new AbortController();
+  stopBtn.disabled = false; // Always allow stopping streaming  // Declare progress interval at function scope to avoid reference errors
+  let progressInterval = null;
+  
+  // Show streaming status
+  statusEl.textContent = 'Streaming response...';
+
+      try {
+        // Always use streaming for real-time token display
+        await streamChatResponse(
+          primary,
+          messages,
+          (token) => {
+            streamed += token;
+            const cleanedContent = cleanFakeCopyButtons(streamed);
+            bubble.innerHTML = wrapCodeBlocks(renderMarkdownLite(cleanedContent));
+            chatLog.scrollTop = chatLog.scrollHeight;
+          },
+          () => {
+            const ms = performance.now() - start;
+            recordLatency(task, primary, ms);
+            recordQueryStats({ task, model: primary, latencyMs: ms, success: true });
+            const cleanedFinalContent = cleanFakeCopyButtons(streamed);
+            addMessage(sessionId, 'assistant', cleanedFinalContent);
+            bubble.innerHTML = wrapCodeBlocks(renderMarkdownLite(cleanedFinalContent));
+            statusEl.textContent = `Done in ${formatMs(ms)} via ${primary}`;
+            
+            // Track AI chat interaction in Google Analytics
+            if (window.analytics) {
+              window.analytics.trackChatMessage(primary, ms);
+            }
+          },
+          (err) => {
+            throw err;
+          },
+          { signal: abortController.signal }
+        );
+        
+      } catch (err) {
+        // Clear any progress intervals
+        if (progressInterval) clearInterval(progressInterval);
+        
+        console.error('Chat request error:', err);
+        
+        // Handle timeout errors
+        if (err.name === 'AbortError' || err.message.includes('timeout') || err.message.includes('timed out')) {
+          bubble.innerHTML = `<div style="color: #ff6b6b; padding: 10px; border-left: 3px solid #ff6b6b;">
+            <strong>Request Timeout</strong><br>
+            The request took too long to complete.<br>
+            <em>Try a simpler query or check your connection.</em>
+          </div>`;
+          statusEl.textContent = 'Request timeout';
+          abortController = null;
+          return;
+        }
+        
+        // Try alternatives once
+  if (alternatives.length && !wantsFull) {
+          statusEl.textContent = `Primary failed, trying ${alternatives[0]}…`;
+          streamed = ''; // Reset for retry
+          try {
+            await streamChatResponse(
+              alternatives[0],
+              messages,
+              (token) => {
+                streamed += token;
+                bubble.innerHTML = wrapCodeBlocks(renderMarkdownLite(streamed));
+                chatLog.scrollTop = chatLog.scrollHeight;
+              },
+              () => {
+                const ms = performance.now() - start;
+                recordLatency(task, alternatives[0], ms);
+                recordQueryStats({ task, model: alternatives[0], latencyMs: ms, success: true });
+                addMessage(sessionId, 'assistant', streamed);
+                statusEl.textContent = `Done in ${formatMs(ms)} via ${alternatives[0]}`;
+              },
+              (err) => {
+                throw err;
+              },
+              { signal: abortController.signal }
+            );
+            statusEl.textContent = `Done in ${formatMs(ms)} via ${alternatives[0]}`;
+            
+          } catch (err2) {
+            statusEl.textContent = `Failed: ${err2?.message || 'Unknown error'}`;
+            recordQueryStats({ task, model: alternatives[0], latencyMs: 0, success: false });
+          }
+        } else {
+          statusEl.textContent = `Error: ${err?.message || 'Unknown error'}`;
+          recordQueryStats({ task, model: primary, latencyMs: 0, success: false });
+        }
+      } finally {
+        stopBtn.disabled = true; 
+        abortController = null;
+      }
+
+      // Optional: allow cancellation
+      stopBtn.onclick = ()=>{ abortController?.abort(); stopBtn.disabled = true; statusEl.textContent = 'Stopped.'; };
+    }
+
+    // auto-resize textarea
+    function autoResize(){ queryInput.style.height = 'auto'; queryInput.style.height = Math.min(240, queryInput.scrollHeight) + 'px'; }
+    queryInput.addEventListener('input', autoResize); autoResize();
+    sendBtn.addEventListener('click', handleSend);
+    queryInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); handleSend(); }});
+    resetBtn.addEventListener('click', ()=>{ clearHistory(sessionId); chatLog.innerHTML=''; statusEl.textContent='History cleared.'; });
+
+    // quick prompt chips
+    const samples = [
+      'give code to get square of even numbers in a list (python)',
+      'Explain quantum computing in simple terms',
+      'What is 15 * 23 + 7?',
+      'Translate "Hello world" to Spanish'
+    ];
+    for(const s of samples){
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.textContent = s;
+      chip.addEventListener('click', ()=>{ queryInput.value = s; autoResize(); queryInput.focus(); });
+      chipsEl.appendChild(chip);
+    }
+
+    // Full answer toggle removed - all responses are now complete by default
+
+    // Dataset management logic (upload handled in Knowledge section)
+    const datasetSelect = document.getElementById('datasetSelect');
+    const pinBtn = document.getElementById('pinDatasetBtn');
+    const refreshBtn = document.getElementById('refreshDatasetBtn');
+    let pinnedDataset = getPrefs().pinnedDataset || '';
+    if (pinnedDataset) {
+      // Will set once options load
+      datasetSelect.dataset.preset = pinnedDataset;
+    }
+    
+    // Update pin button text based on current state
+    function updatePinButton() {
+      if (pinnedDataset) {
+        pinBtn.textContent = 'Pinned';
+      } else {
+        pinBtn.textContent = 'Pin dataset';
+      }
+    }
+    
+    async function loadDatasets(){
+      try {
+        const res = await fetch('/api/datasets', {
+          credentials: 'include'
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const availableDatasets = data.datasets.map(d => d.name);
+        
+        // Check if pinned dataset still exists
+        if (pinnedDataset && !availableDatasets.includes(pinnedDataset)) {
+          console.log(`Pinned dataset '${pinnedDataset}' no longer exists, clearing pin`);
+          pinnedDataset = '';
+          setPrefs({ pinnedDataset: '' });
+          datasetSelect.dataset.preset = '';
+          
+          // Show user notification that pinned dataset was removed
+          const statusEl = document.getElementById('status');
+          if (statusEl) {
+            const originalText = statusEl.textContent;
+            statusEl.textContent = `Pinned dataset was removed from server`;
+            statusEl.style.color = '#ff6b6b';
+            setTimeout(() => {
+              statusEl.textContent = originalText;
+              statusEl.style.color = '';
+            }, 3000);
+          }
+        }
+        
+        // Clear existing options except first (placeholder)
+        while (datasetSelect.options.length > 1) datasetSelect.remove(1);
+        
+        // Add available datasets
+        for (const d of data.datasets){
+          const opt = document.createElement('option');
+          opt.value = d.name;
+          opt.textContent = `${d.name} (${(d.size/1024).toFixed(1)} KB)`;
+          datasetSelect.appendChild(opt);
+        }
+        
+        // Restore selection if dataset still exists
+        if (datasetSelect.dataset.preset && availableDatasets.includes(datasetSelect.dataset.preset)) {
+          datasetSelect.value = datasetSelect.dataset.preset;
+        } else if (pinnedDataset && availableDatasets.includes(pinnedDataset)) {
+          datasetSelect.value = pinnedDataset;
+        } else {
+          datasetSelect.value = ''; // Reset to placeholder
+        }
+        
+        // Update pin button to reflect current state
+        updatePinButton();
+        
+      } catch(e){
+        console.warn('Failed to load datasets:', e);
+      }
+    }
+    loadDatasets();
+    // Periodic refresh (in case new uploads appear server-side)
+    setInterval(loadDatasets, 30000);
+
+    pinBtn.addEventListener('click', ()=>{
+      pinnedDataset = datasetSelect.value || '';
+      setPrefs({ pinnedDataset });
+      if (pinnedDataset) {
+        pinBtn.textContent = 'Pinned';
+        setTimeout(()=> pinBtn.textContent='Re-pin', 1500);
+      } else {
+        pinBtn.textContent = 'Pin dataset';
+      }
+    });
+
+    refreshBtn.addEventListener('click', async ()=>{
+      refreshBtn.textContent = '...';
+      try {
+        await loadDatasets();
+        refreshBtn.textContent = '✓';
+        setTimeout(() => refreshBtn.textContent = '⟲', 1000);
+      } catch (e) {
+        console.error('Failed to refresh datasets:', e);
+        refreshBtn.textContent = '✗';
+        setTimeout(() => refreshBtn.textContent = '⟲', 2000);
+      }
+    });
+
+    updatePinButton();
+
+    // Modify handleSend to auto-inject pinned dataset mention if absent
+    const originalHandleSend = handleSend;
+    handleSend = async function(){
+      try {
+        // Only auto-append dataset if user is clearly asking about data analysis AND has a pinned dataset
+        if (pinnedDataset && queryInput.value) {
+          const isDataAnalysisQuestion = /(?:analyze|analysis|show|tell|describe|explain|summary|statistics|stats|insights?|trends?|patterns?|what.*data|how.*data|examine|explore|investigate|from.*data|in.*data|of.*data)/i.test(queryInput.value);
+          const alreadyHasDatasetRef = queryInput.value.toLowerCase().includes(pinnedDataset.toLowerCase()) || /dataset:|\.csv/i.test(queryInput.value);
+          
+          if (isDataAnalysisQuestion && !alreadyHasDatasetRef) {
+            // Check if the pinned dataset is still available
+            const stillExists = Array.from(datasetSelect.options).some(opt => opt.value === pinnedDataset);
+            if (stillExists) {
+              queryInput.value = queryInput.value.trim() + ` (dataset: ${pinnedDataset})`;
+            } else {
+              // Dataset was removed, clear the pin silently
+              pinnedDataset = '';
+              setPrefs({ pinnedDataset: '' });
+              updatePinButton();
+            }
+          }
+        }
+        await originalHandleSend();
+      } catch (error) {
+        console.error('[ERROR] handleSend wrapper failed:', error);
+        // Fallback: show error message
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = `Error: ${error.message}`;
+      }
+    };
+
+    // Minimal CSS injection for spinner keyframes if not present
+    const style = document.createElement('style');
+    style.textContent = '@keyframes spin { to { transform: rotate(360deg); } } .hidden{display:none !important;}';
+    document.head.appendChild(style);
+
+    // Monkey patch fetch for dataset context detection feedback (lightweight heuristic)
+    const origFetch = window.fetch;
+    window.fetch = async function(resource, init){
+      if (typeof resource === 'string' && /\/api\/chat$/.test(resource) && init && init.body){
+        try {
+          const bodyObj = JSON.parse(init.body);
+          const last = bodyObj.messages?.[bodyObj.messages.length - 1]?.content || '';
+          if (/data\.csv/i.test(last) || /LOCAL DATASET CONTEXT:/i.test(last)) {
+            datasetBadge.classList.remove('hidden');
+            setTimeout(()=> datasetBadge.classList.add('hidden'), 6000);
+          }
+        } catch(_e){}
+      }
+      return origFetch.apply(this, arguments);
+    }
+  </script>
+</body>
+</html>
+
+
