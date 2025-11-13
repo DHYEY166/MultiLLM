@@ -28,8 +28,8 @@ header{
   text-decoration:none; color:var(--text); opacity:.9; padding:8px 10px; border-radius:8px
 }
 .nav a.active, .nav a:hover{background:#fff1e6; color:#92400e}
-.brand{font-weight:700; letter-spacing:.3px; margin-right:auto; display:flex; align-items:center; gap:8px}
-.brand img{height:32px; width:auto}
+.brand{font-weight:700; letter-spacing:.3px; margin-right:auto; display:flex; align-items:center; gap:10px}
+.brand img{height:48px; width:auto}
 .grid{display:grid; gap:16px}
 .panel{
   background:var(--panel); border:1px solid #f3f4f6; border-radius:12px; padding:16px
