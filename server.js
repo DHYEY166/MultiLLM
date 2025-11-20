@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const session = require('express-session');
 const { RedisStore } = require('connect-redis');
 const { createClient } = require('redis');
@@ -95,6 +96,61 @@ function evaluateMath(expression) {
   } catch {
     return null;
   }
+}
+
+// Security utility functions
+function sanitizeUserId(userId) {
+  const sanitized = String(userId).replace(/[^a-zA-Z0-9_-]/g, '');
+  if (sanitized !== String(userId)) {
+    throw new Error('Invalid user ID format');
+  }
+  return sanitized;
+}
+
+function validatePath(filePath, allowedBaseDir) {
+  const resolvedPath = path.resolve(filePath);
+  const resolvedBase = path.resolve(allowedBaseDir);
+  if (!resolvedPath.startsWith(resolvedBase)) {
+    console.error('[SECURITY] Path traversal attempt detected:', filePath);
+    throw new Error('Invalid file path');
+  }
+  return resolvedPath;
+}
+
+function sanitizeCsvCell(value) {
+  if (typeof value !== 'string') return value;
+  const dangerous = ['=', '+', '-', '@', '\t', '\r'];
+  if (dangerous.some(char => value.startsWith(char))) {
+    return "'" + value;
+  }
+  return value;
+}
+
+function validateQuery(query) {
+  const MAX_QUERY_LENGTH = 10000;
+  if (query.length > MAX_QUERY_LENGTH) {
+    throw new Error('Query too long. Maximum 10,000 characters.');
+  }
+  const suspiciousPatterns = [
+    /ignore (previous|all) (instructions|prompts)/i,
+    /system prompt:/i,
+    /you are now/i,
+    /<script/i,
+    /javascript:/i
+  ];
+  for (const pattern of suspiciousPatterns) {
+    if (pattern.test(query)) {
+      console.warn('[SECURITY] Suspicious query pattern detected from IP:', query.substring(0, 50));
+    }
+  }
+  return query.replace(/<script[^>]*>.*?<\/script>/gi, '')
+              .replace(/<iframe[^>]*>.*?<\/iframe>/gi, '')
+              .trim();
+}
+
+function logSecurityEvent(event, details) {
+  const timestamp = new Date().toISOString();
+  console.log(`[SECURITY] ${timestamp} - ${event}:`, JSON.stringify(details));
 }
 
 // Generate cache key for responses
@@ -206,15 +262,17 @@ function listCsvFiles() {
 
 function listUserCsvFiles(userId) {
   // Scan user-specific data directory for *.csv files
-  const userDataDir = path.join(__dirname, 'data', `user_${userId}`);
+  const safeUserId = sanitizeUserId(userId);
+  const userDataDir = path.join(__dirname, 'data', `user_${safeUserId}`);
+  const validatedPath = validatePath(userDataDir, path.join(__dirname, 'data'));
   const out = [];
-  if (!fs.existsSync(userDataDir)) return out;
+  if (!fs.existsSync(validatedPath)) return out;
   
   try {
-    const files = fs.readdirSync(userDataDir);
+    const files = fs.readdirSync(validatedPath);
     for (const f of files) {
       if (!/\.csv$/i.test(f)) continue;
-      const abs = path.join(userDataDir, f);
+      const abs = path.join(validatedPath, f);
       const stat = fs.statSync(abs);
       if (stat.size > 10 * 1024 * 1024) { // skip >10MB for now
         continue;
@@ -227,44 +285,50 @@ function listUserCsvFiles(userId) {
 
 function cleanupUserData(userId) {
   try {
-    console.log(`[CLEANUP] Cleaning up data for user ${userId}`);
+    const safeUserId = sanitizeUserId(userId);
+    console.log(`[CLEANUP] Cleaning up data for user ${safeUserId}`);
     
     // Clean up user dataset directory
-    const userDataDir = path.join(__dirname, 'data', `user_${userId}`);
-    if (fs.existsSync(userDataDir)) {
-      const dataFiles = fs.readdirSync(userDataDir);
+    const userDataDir = path.join(__dirname, 'data', `user_${safeUserId}`);
+    const validatedDataDir = validatePath(userDataDir, path.join(__dirname, 'data'));
+    if (fs.existsSync(validatedDataDir)) {
+      const dataFiles = fs.readdirSync(validatedDataDir);
       for (const file of dataFiles) {
-        const filePath = path.join(userDataDir, file);
+        const filePath = path.join(validatedDataDir, file);
         fs.unlinkSync(filePath);
         console.log(`[CLEANUP] Deleted dataset: ${file}`);
       }
-      fs.rmdirSync(userDataDir);
-      console.log(`[CLEANUP] Removed user data directory: ${userDataDir}`);
+      fs.rmdirSync(validatedDataDir);
+      console.log(`[CLEANUP] Removed user data directory: ${validatedDataDir}`);
+      logSecurityEvent('DATA_CLEANUP', { userId: safeUserId, type: 'data_directory' });
     }
     
     // Clean up user uploads directory
-    const userUploadsDir = path.join(__dirname, 'uploads', `user_${userId}`);
-    if (fs.existsSync(userUploadsDir)) {
-      const uploadFiles = fs.readdirSync(userUploadsDir);
+    const userUploadsDir = path.join(__dirname, 'uploads', `user_${safeUserId}`);
+    const validatedUploadsDir = validatePath(userUploadsDir, path.join(__dirname, 'uploads'));
+    if (fs.existsSync(validatedUploadsDir)) {
+      const uploadFiles = fs.readdirSync(validatedUploadsDir);
       for (const file of uploadFiles) {
-        const filePath = path.join(userUploadsDir, file);
+        const filePath = path.join(validatedUploadsDir, file);
         fs.unlinkSync(filePath);
         console.log(`[CLEANUP] Deleted upload: ${file}`);
       }
-      fs.rmdirSync(userUploadsDir);
-      console.log(`[CLEANUP] Removed user uploads directory: ${userUploadsDir}`);
+      fs.rmdirSync(validatedUploadsDir);
+      console.log(`[CLEANUP] Removed user uploads directory: ${validatedUploadsDir}`);
+      logSecurityEvent('DATA_CLEANUP', { userId: safeUserId, type: 'uploads_directory' });
     }
     
     // Clear user-specific cache entries
     Object.keys(_csvSummaryCache).forEach(key => {
-      if (key.includes(`user_${userId}`)) {
+      if (key.includes(`user_${safeUserId}`)) {
         delete _csvSummaryCache[key];
       }
     });
     
-    console.log(`[CLEANUP] Successfully cleaned up data for user ${userId}`);
+    console.log(`[CLEANUP] Successfully cleaned up data for user ${safeUserId}`);
   } catch (error) {
     console.error(`[CLEANUP] Error cleaning up data for user ${userId}:`, error);
+    logSecurityEvent('CLEANUP_ERROR', { userId, error: error.message });
   }
 }
 
@@ -543,13 +607,36 @@ app.use(cors({
 // Rate limiting - simplified configuration
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // increased limit to prevent blocking legitimate users
+  max: 5, // Strict limit: 5 login attempts per 15 minutes
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true, // Don't count successful logins
+  handler: (req, res) => {
+    logSecurityEvent('RATE_LIMIT_EXCEEDED', { 
+      ip: req.ip, 
+      path: req.path,
+      email: req.body?.email 
+    });
+    res.status(429).json({
+      error: 'Too many attempts',
+      message: 'Please try again later'
+    });
+  },
   skip: (req) => {
-    // Skip rate limiting in development or for health checks
     return process.env.NODE_ENV !== 'production' || req.path.includes('health');
+  }
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50, // 50 uploads per hour
+  message: 'Upload limit reached, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logSecurityEvent('UPLOAD_RATE_LIMIT_EXCEEDED', { ip: req.ip, userId: req.user?.id });
+    res.status(429).json({ error: 'Upload limit reached' });
   }
 });
 
@@ -570,16 +657,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Session configuration with Redis store
+const sessionSecret = process.env.SESSION_SECRET || (() => {
+  const fallback = crypto.randomBytes(32).toString('hex');
+  console.warn('[SECURITY WARNING] No SESSION_SECRET environment variable set. Using generated secret.');
+  console.warn('[SECURITY WARNING] Set SESSION_SECRET in production to persist sessions across restarts.');
+  return fallback;
+})();
+
 app.use(session({
   store: sessionStore, // Uses Redis if available, falls back to MemoryStore
-  secret: process.env.SESSION_SECRET || 'fallback-secret-key',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: { 
     secure: process.env.NODE_ENV === 'production', // behind TLS / reverse proxy
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    // Use 'lax' still, but if embedding in iframes later we may need 'none'
     sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'strict'
   },
   name: 'multillm.sid'
@@ -763,6 +856,20 @@ app.post('/api/chat', async (req, res) => {
   if (requestBody.message && !requestBody.messages) {
     requestBody.messages = [{ role: 'user', content: requestBody.message }];
     delete requestBody.message; // Remove the single message field
+  }
+  
+  // Validate and sanitize query content
+  try {
+    if (requestBody.messages && Array.isArray(requestBody.messages)) {
+      for (const msg of requestBody.messages) {
+        if (msg.content && typeof msg.content === 'string') {
+          msg.content = validateQuery(msg.content);
+        }
+      }
+    }
+  } catch (error) {
+    logSecurityEvent('QUERY_VALIDATION_FAILED', { error: error.message, ip: req.ip, userId: req.user?.id });
+    return res.status(400).json({ error: error.message });
   }
   
   // Determine if caller explicitly wants a full (non-streaming) answer
@@ -965,7 +1072,19 @@ app.post('/api/chat', async (req, res) => {
         }
       }
       bundleLines.push('SAMPLE ROWS:');
-      for (const r of sampleRows.slice(0,2)) bundleLines.push('  ' + r);
+      // Sanitize sample rows to prevent CSV injection
+      const sanitizedSamples = sampleRows.slice(0,2).map(row => {
+        if (typeof row === 'string') return sanitizeCsvCell(row);
+        if (typeof row === 'object') {
+          const sanitized = {};
+          for (const [key, value] of Object.entries(row)) {
+            sanitized[key] = sanitizeCsvCell(String(value));
+          }
+          return JSON.stringify(sanitized);
+        }
+        return row;
+      });
+      for (const r of sanitizedSamples) bundleLines.push('  ' + r);
       if (correlations?.length) {
         bundleLines.push('CORRELATIONS (|r|>=0.2):');
         for (const c of correlations.slice(0,5)) bundleLines.push(`  ${c.a} ~ ${c.b}: r=${c.r}`); // Reduced from 8 to 5
@@ -1435,35 +1554,49 @@ const unifiedStorage = multer.diskStorage({
 
 const upload = multer({ 
   storage: unifiedStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
+  limits: { 
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+    files: 1 // Only one file at a time
+  },
   fileFilter: function (req, file, cb) {
-    // Accept CSV, TXT, PDF, DOCX files and common code files
-    const allowedTypes = [
-      'text/csv',
-      'text/plain', 
-      'text/markdown',
-      'application/json',
-      'application/javascript',
-      'text/javascript',
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/msword'
-    ];
-    const allowedExtensions = [
-      '.csv', '.txt', '.md', '.json', '.pdf', '.docx', '.doc',
-      '.js', '.ts', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.cs', '.rb', '.php'
-    ];
+    const allowedTypes = {
+      'text/csv': ['.csv'],
+      'text/plain': ['.txt'],
+      'text/markdown': ['.md'],
+      'application/json': ['.json'],
+      'application/javascript': ['.js'],
+      'text/javascript': ['.js'],
+      'application/pdf': ['.pdf'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+      'application/msword': ['.doc'],
+      'application/octet-stream': ['.py', '.java', '.go', '.rs', '.c', '.cpp', '.cs', '.rb', '.php', '.ts']
+    };
     
-    const hasValidMime = allowedTypes.includes(file.mimetype);
-    const hasValidExt = allowedExtensions.some(ext => 
-      file.originalname.toLowerCase().endsWith(ext)
-    );
+    const allowedExtensions = ['.csv', '.txt', '.md', '.json', '.pdf', '.docx', '.doc', '.js', '.ts', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.cs', '.rb', '.php'];
     
-    if (hasValidMime || hasValidExt) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only CSV, TXT, MD, JSON, PDF, DOCX, and common code files are allowed'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    const hasValidExt = allowedExtensions.includes(ext);
+    
+    if (!hasValidExt) {
+      logSecurityEvent('FILE_UPLOAD_REJECTED', { filename: file.originalname, reason: 'invalid_extension', ip: req.ip });
+      return cb(new Error('File type not allowed'));
     }
+    
+    const hasValidMime = Object.entries(allowedTypes).some(([mime, exts]) => {
+      return file.mimetype === mime && exts.includes(ext);
+    });
+    
+    if (!hasValidMime && file.mimetype !== 'application/octet-stream') {
+      logSecurityEvent('FILE_UPLOAD_REJECTED', { filename: file.originalname, reason: 'mime_mismatch', mime: file.mimetype, ip: req.ip });
+      return cb(new Error('File type mismatch'));
+    }
+    
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (safeName !== file.originalname) {
+      logSecurityEvent('FILE_UPLOAD_SANITIZED', { original: file.originalname, sanitized: safeName, ip: req.ip });
+    }
+    
+    cb(null, true);
   }
 });
 
@@ -1537,13 +1670,21 @@ async function extractTextContent(filePath, originalName) {
 }
 
 // Unified file upload endpoint (handles both datasets and knowledge files)
-app.post('/api/files/upload', requireAuth, upload.single('file'), async (req, res) => {
+app.post('/api/files/upload', requireAuth, uploadLimiter, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
+      logSecurityEvent('FILE_UPLOAD_FAILED', { reason: 'no_file', userId: req.user?.id, ip: req.ip });
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
     const { filename, originalname, size, path: filePath } = req.file;
+    logSecurityEvent('FILE_UPLOAD_SUCCESS', { 
+      userId: req.user?.id, 
+      filename: originalname, 
+      size, 
+      mimetype: req.file.mimetype,
+      ip: req.ip 
+    });
     const isCSV = originalname.toLowerCase().endsWith('.csv');
     
     console.log(`[UPLOAD] File uploaded: ${originalname} -> ${filename} (${size} bytes, ${isCSV ? 'dataset' : 'knowledge'})`);
@@ -1769,34 +1910,45 @@ app.post('/auth/register', authLimiter, async (req, res) => {
 });
 
 app.post('/auth/login', authLimiter, (req, res, next) => {
-  console.log('Login attempt:', { email: req.body.email, ip: req.ip });
+  logSecurityEvent('LOGIN_ATTEMPT', { email: req.body.email, ip: req.ip, userAgent: req.headers['user-agent'] });
   
   passport.authenticate('local', (err, user, info) => {
     if (err) {
       console.error('Authentication error:', err);
+      logSecurityEvent('AUTH_ERROR', { email: req.body.email, error: err.message, ip: req.ip });
       return res.status(500).json({ error: 'Authentication error' });
     }
     
     if (!user) {
-      console.log('Login failed:', { email: req.body.email, reason: info?.message });
+      logSecurityEvent('LOGIN_FAILED', { email: req.body.email, reason: info?.message, ip: req.ip });
       return res.status(401).json({ error: info.message || 'Invalid credentials' });
     }
     
-    req.login(user, (err) => {
-      if (err) {
-        console.error('Session creation failed:', err);
+    req.session.regenerate((regenerateErr) => {
+      if (regenerateErr) {
+        console.error('[SECURITY] Session regeneration failed:', regenerateErr);
         return res.status(500).json({ error: 'Login failed' });
       }
       
-      console.log('Login successful:', { userId: user.id, email: user.email });
-      res.json({ 
-        success: true, 
-        user: { 
-          id: user.id, 
-          email: user.email, 
-          name: user.name,
-          provider: user.provider 
-        } 
+      req.login(user, (loginErr) => {
+        if (loginErr) {
+          console.error('Session creation failed:', loginErr);
+          logSecurityEvent('SESSION_ERROR', { userId: user.id, error: loginErr.message, ip: req.ip });
+          return res.status(500).json({ error: 'Login failed' });
+        }
+        
+        req.session.loginTime = Date.now();
+        logSecurityEvent('LOGIN_SUCCESS', { userId: user.id, email: user.email, ip: req.ip, provider: user.provider });
+        
+        res.json({ 
+          success: true, 
+          user: { 
+            id: user.id, 
+            email: user.email, 
+            name: user.name,
+            provider: user.provider 
+          } 
+        });
       });
     });
   })(req, res, next);
@@ -1838,16 +1990,26 @@ app.get('/api/debug/user-data', requireAuth, (req, res) => {
 });
 
 app.post('/auth/logout', (req, res) => {
-  // Clean up user data before logout
-  if (req.user && req.user.id) {
-    cleanupUserData(req.user.id);
+  const userId = req.user?.id;
+  const email = req.user?.email;
+  
+  if (userId) {
+    cleanupUserData(userId);
+    logSecurityEvent('LOGOUT', { userId, email, ip: req.ip });
   }
   
   req.logout((err) => {
     if (err) {
+      logSecurityEvent('LOGOUT_ERROR', { userId, error: err.message, ip: req.ip });
       return res.status(500).json({ error: 'Logout failed' });
     }
-    res.json({ success: true });
+    
+    req.session.destroy((destroyErr) => {
+      if (destroyErr) {
+        console.error('[SECURITY] Session destruction failed:', destroyErr);
+      }
+      res.clearCookie('multillm.sid');
+      res.json({ success: true });
   });
 });
 
