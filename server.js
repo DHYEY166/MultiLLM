@@ -2010,6 +2010,7 @@ app.post('/auth/logout', (req, res) => {
       }
       res.clearCookie('multillm.sid');
       res.json({ success: true });
+    });
   });
 });
 
